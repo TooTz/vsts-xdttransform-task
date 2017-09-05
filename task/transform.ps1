@@ -1,63 +1,17 @@
-[CmdletBinding()]
-param()
-
-Function _ApplyTransform
-{
-    param(
-        [string] $SourceFile,
-        [string] $TransformFile,
-        [string] $OutputFile
-    )
-
-    # validate inputs
-    if (!(Test-Path $SourceFile))
-    {
-        Write-Error "File '${SourceFile}' not found."
-        
-        return
-    }
-
-    if (!(Test-Path $TransformFile))
-    {
-        Write-Error "File '${TransformFile}' not found."
-        
-        return
-    }
-
-    # apply transformations
-    Write-Host "Applying transformations '${TransformFile}' on file '${SourceFile}'..."
-    
-    $source = New-Object Microsoft.Web.XmlTransform.XmlTransformableDocument
-    $source.PreserveWhitespace = $true
-    $source.Load($SourceFile)
-
-    $transform = [System.IO.File]::ReadAllText($TransformFile)
-    $transformation = New-Object Microsoft.Web.XmlTransform.XmlTransformation $transform, $false, $null
-    if (!$transformation.Apply($source))
-    {
-        Write-Error "Error while applying transformations '${TransformFile}'."
-
-        return
-    }
-
-    # save output
-    $outputParent = Split-Path $OutputFile -Parent
-    if (!(Test-Path $outputParent))
-    {
-        Write-Verbose "Creating folder '${outputParent}'."
-
-        New-Item -Path $outputParent -ItemType Directory -Force > $null
-    }
-
-    $source.Save($OutputFile)
-}
+[CmdletBinding(DefaultParameterSetName = 'None')]
+param(
+    [string] [Parameter(Mandatory = $false)]
+    $workingFolder,
+    [string] [Parameter(Mandatory = $true)]
+    $transforms
+)
 
 Trace-VstsEnteringInvocation $MyInvocation
 try
 {
     # get inputs
-    [string] $workingFolder = Get-VstsInput -Name 'workingFolder'
-    [string] $transforms = Get-VstsInput -Name 'transforms' -Require
+    #[string] $workingFolder = Get-VstsInput -Name 'workingFolder'
+    #[string] $transforms = Get-VstsInput -Name 'transforms' -Require
 
     if (!$workingFolder)
     {
@@ -75,7 +29,6 @@ try
         if (!$rule)
         {
             Write-Warning "Found empty rule."
-
             return
         }
 
@@ -83,36 +36,112 @@ try
         if ($ruleParts.Length -lt 2)
         {
             Write-Error "Invalid rule '${rule}'."
-
             return
         }
 
-        $transformFile = $ruleParts[0].Trim()
-        if (![System.IO.Path]::IsPathRooted($transformFile))
+        $xdtRule = $ruleParts[0].Trim()
+        $xmlRule = $ruleParts[1].Trim()
+        $xdtFile = $xdtRule
+        $xmlFile = $xmlRule
+
+        if (![System.IO.Path]::IsPathRooted($xdtFile))
         {
-            $transformFile = Join-Path $workingFolder $transformFile
+            $xdtFile = Join-Path $workingFolder $xdtFile
         }
 
-        $sourceFile = $ruleParts[1].Trim()
-        if (![System.IO.Path]::IsPathRooted($sourceFile))
+        if (![System.IO.Path]::IsPathRooted($xmlFile))
         {
-            $sourceFile = Join-Path $workingFolder $sourceFile
+            $xmlFile = Join-Path $workingFolder $xmlFile
         }
 
-        $outputFile = $sourceFile
-        if ($ruleParts.Length -eq 3)
+        # check for pattern 
+        if ($xdtFile.Contains("*") -or $xdtFile.Contains("?")) 
         {
-            $outputFile = $ruleParts[2].Trim()
-            if (![System.IO.Path]::IsPathRooted($outputFile))
+            Write-Verbose "Pattern found in solution parameter."
+            Write-Verbose "Find-VstsFiles -LegacyPattern $xdtFile"
+            $xdtFiles = Find-VstsFiles -LegacyPattern $xdtFile
+            Write-Verbose "transformFiles = $xdtFiles"
+        } 
+        else 
+        { 
+            Write-Verbose "No Pattern found in solution parameter."
+            $xdtFiles = ,$xdtFile
+        } 
+
+        if ($xmlFile.Contains("*") -or $xmlFile.Contains("?")) 
+        {
+            Write-Verbose "Pattern found in solution parameter."
+            Write-Verbose "Find-VstsFiles -LegacyPattern $xmlFile"
+            $xmlFiles = Find-VstsFiles -LegacyPattern $xmlFile 
+            Write-Verbose "sourceFiles = $xmlFiles"
+        } 
+        else 
+        { 
+            Write-Verbose "No Pattern found in solution parameter."
+            $xmlFiles = ,$xmlFile
+        }
+
+        $xdtFiles | foreach {
+            $xdt = $_
+            $xml = ($_ -replace ((Split-Path $xdtRule -Leaf) -replace "\*")) + (((Split-Path $xmlRule -Leaf) -replace "\*"))
+            Write-Verbose "XDT File = $xdt"
+            Write-Verbose "XML File = $xml"       
+
+            $out = $xml
+            if ($ruleParts.Length -eq 3)
             {
-                $outputFile = Join-Path $workingFolder $outputFile
+                $out = $ruleParts[2].Trim()
+                if (![System.IO.Path]::IsPathRooted($out))
+                {
+                    $out = Join-Path $workingFolder $out
+                }
             }
-        }
 
-        _ApplyTransform -SourceFile $sourceFile -TransformFile $transformFile -OutputFile $outputFile
+            XmlDocTransform($xml,$xdt,$out)
+        }
     }
 }
 finally
 {
     Trace-VstsLeavingInvocation $MyInvocation
 }
+
+########################################
+# Private functions.
+########################################
+function XmlDocTransform($xml, $xdt, $out) {
+[CmdletBinding()]
+
+      if (!($xmlpath) -or !(Test-Path -path ($xmlpath) -PathType Leaf)) {
+         throw "Base file not found. $xmlpath";
+      }
+
+      if (!($xdtpath) -or !(Test-Path -path ($xdtpath) -PathType Leaf)) {
+         throw "Transform file not found. $xdtpath";
+      }
+
+      Add-Type -LiteralPath "$PSScriptRoot\Microsoft.Web.XmlTransform.dll"
+
+      $xmldoc = New-Object   Microsoft.Web.XmlTransform.XmlTransformableDocument;
+      $xmldoc.PreserveWhitespace = $true
+      $xmldoc.Load($xmlpath);
+
+      $transf = New-Object Microsoft.Web.XmlTransform.XmlTransformation($xdtpath);
+      if ($transf.Apply($xmldoc) -eq $false)
+      {
+          throw "Transformation failed."
+      }
+    
+      # save output
+      $outputParent = Split-Path $out -Parent
+      if (!(Test-Path $outputParent))
+      {
+          Write-Verbose "Creating folder '${outputParent}'."
+      
+          New-Item -Path $outputParent -ItemType Directory -Force > $null
+      }
+      
+      $xmldoc.Save($out)
+
+      Write-Host "Transformation succeeded" -ForegroundColor Green
+  }
